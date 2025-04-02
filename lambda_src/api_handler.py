@@ -97,6 +97,7 @@ def create_item(event):
 def get_all_items(event):
     """Handles GET /items"""
     logger.info("Fetching all items")
+    logger.info("--- Enhanced log: Starting scan operation now! ---") # <-- Your newly added line
     response = table.scan()
     items = response.get('Items', [])
     # Handle potential pagination if needed for large tables
