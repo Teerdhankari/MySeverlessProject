@@ -8,9 +8,3 @@ __pycache__
 # CDK asset staging directory
 .cdk.staging
 cdk.out
-"__pycache__/" 
-"*.pyc" 
-".venv/" 
-"cdk.out/" 
-".DS_Store" 
-"*.egg-info/" 
