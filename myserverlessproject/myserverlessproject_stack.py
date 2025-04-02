@@ -29,7 +29,7 @@ GITHUB_BRANCH = "main" # Or your default development branch
 # vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
 # PASTE YOUR COPIED CODESTAR CONNECTION ARN FROM AWS CONSOLE HERE:
 # It looks like: arn:aws:codestar-connections:REGION:ACCOUNT_ID:connection/UUID
-CODESTAR_CONNECTION_ARN = "arn:aws:codeconnections:ap-south-1:383014559627:connection/f84af1db-d46a-4717-9429-f1c2cf053c9e" # <--- REPLACE THIS VALUE
+CODESTAR_CONNECTION_ARN = "arn:aws:codeconnections:us-east-1:383014559627:connection/67d7ed99-3d52-4ab3-8a86-23c7c9ba61c0" # <--- REPLACE THIS VALUE
 # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 class MyserverlessprojectStack(Stack):
