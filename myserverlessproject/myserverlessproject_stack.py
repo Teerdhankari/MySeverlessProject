@@ -6,12 +6,12 @@ from aws_cdk import (
     RemovalPolicy,
     Duration,
     CfnOutput,
-    SecretValue,
+    SecretValue, # Keep if considering GitHub PAT alternative
     aws_dynamodb as dynamodb,
     aws_iam as iam,
     aws_lambda as _lambda, # Using alias to avoid conflict with Python keyword
     # Import the specific submodule for Python Lambda Alpha
-    aws_lambda_python_alpha as lambda_python, # <--- CORRECTED IMPORT
+    aws_lambda_python_alpha as lambda_python, # Correct import for PythonFunction
     aws_apigateway as apigw,
     aws_codepipeline as codepipeline,
     aws_codepipeline_actions as codepipeline_actions,
@@ -20,16 +20,18 @@ from aws_cdk import (
 from constructs import Construct
 
 # --- Constants ---
-# Replace with your actual GitHub details and CodeStar Connection ARN
-# !!! IMPORTANT: Do NOT commit your personal access token if using that method !!!
+# Ensure these match your GitHub repository details
 GITHUB_OWNER = "Teerdhankari"
 GITHUB_REPO = "MySeverlessProject"
-GITHUB_BRANCH = "main" # Or your default development branch
+GITHUB_BRANCH = "main" # Or your primary development branch
 
 # vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv
-# PASTE YOUR COPIED CODESTAR CONNECTION ARN FROM AWS CONSOLE HERE:
-# It looks like: arn:aws:codestar-connections:REGION:ACCOUNT_ID:connection/UUID
-CODESTAR_CONNECTION_ARN = "arn:aws:codeconnections:us-east-1:383014559627:connection/67d7ed99-3d52-4ab3-8a86-23c7c9ba61c0" # <--- REPLACE THIS VALUE
+# CRITICAL: VALIDATE AND REPLACE THIS ARN!
+# Get the ARN from the AWS Console -> Developer Tools -> CodeStar Connections
+# Make sure it's for the correct AWS Region (e.g., ap-south-1 based on your EC2 info)
+# The service name is 'codestar-connections'.
+# Format: arn:aws:codestar-connections:REGION:ACCOUNT_ID:connection/UUID
+CODESTAR_CONNECTION_ARN = "arn:aws:codeconnections:us-east-1:383014559627:connection/67d7ed99-3d52-4ab3-8a86-23c7c9ba61c0" # <--- ### REPLACE THIS VALUE ###
 # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 class MyserverlessprojectStack(Stack):
@@ -38,7 +40,6 @@ class MyserverlessprojectStack(Stack):
         super().__init__(scope, construct_id, **kwargs)
 
         # --- DynamoDB Table ---
-        # Define the DynamoDB table for storing items
         self.items_table = dynamodb.Table(
             self, "ItemsTable",
             partition_key=dynamodb.Attribute(
@@ -46,96 +47,89 @@ class MyserverlessprojectStack(Stack):
                 type=dynamodb.AttributeType.STRING
             ),
             billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
-            # IMPORTANT: DESTROY deletes table when stack is deleted. Change to RETAIN for production data.
+            # WARNING: RemovalPolicy.DESTROY deletes the table when the stack is deleted.
+            #          Change to RemovalPolicy.RETAIN or RETAIN_ON_UPDATE_OR_DELETE for production data.
             removal_policy=RemovalPolicy.DESTROY
         )
 
         # --- IAM Role for Lambda ---
-        # Define the execution role that the Lambda function will use
         self.lambda_role = iam.Role(
             self, "LambdaExecutionRole",
             assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
             managed_policies=[
-                # Provides permissions for Lambda logging to CloudWatch
+                # Provides permissions for Lambda logging to CloudWatch Logs
                 iam.ManagedPolicy.from_aws_managed_policy_name(
                     "service-role/AWSLambdaBasicExecutionRole"
                 )
             ]
         )
 
-        # --- Grant Permissions ---
-        # Grant the Lambda function's role permissions to Read/Write to the DynamoDB table
+        # --- Grant Permissions to Lambda Role ---
         self.items_table.grant_read_write_data(self.lambda_role)
 
-        # --- Lambda Function ---
-        # Use PythonFunction construct for auto-bundling and handling dependencies from requirements.txt
+        # --- Lambda Function (using PythonFunction for auto-bundling) ---
         self.api_lambda = lambda_python.PythonFunction(
             self, "ApiHandlerLambda",
             entry="lambda_src",          # Directory containing Lambda code (lambda_src/)
-            index="api_handler.py",      # File with the handler function
-            handler="lambda_handler",    # Function name in the file
-            runtime=_lambda.Runtime.PYTHON_3_11, # Or PYTHON_3_10, PYTHON_3_12 etc.
-            role=self.lambda_role,       # Assign the role created earlier
+            index="api_handler.py",      # File with the handler function within 'entry'
+            handler="lambda_handler",    # Function name in the index file
+            runtime=_lambda.Runtime.PYTHON_3_11, # Match runtime used in CodeBuild/tests
+            role=self.lambda_role,       # Assign the execution role
             timeout=Duration.seconds(30),
             memory_size=256,
             environment={
-                # Pass the DynamoDB table name to the Lambda function
                 "DYNAMODB_TABLE_NAME": self.items_table.table_name,
-                "LOG_LEVEL": "INFO"      # Example environment variable for logging config
-            }
-            # Bundling automatically includes requirements.txt from the 'entry' directory if it exists
-            # Or you can specify a project root:
-            # project_root=os.path.dirname(__file__) # Or point to the main project dir
+                "LOG_LEVEL": "INFO"
+            },
+            # Note: Bundling happens automatically using Docker. Requires Docker running
+            # if deploying locally. In CodeBuild, the standard image has Docker.
+            # This step caused the NoSuchKey error previously, ensure Build stage logs
+            # show successful asset bundling and upload if issues persist.
         )
 
         # --- API Gateway ---
-        # Define the REST API that fronts the Lambda function
         self.api = apigw.LambdaRestApi(
             self, "ItemsApi",
-            handler=self.api_lambda,     # Default handler for routes defined below
-            proxy=False,                 # We explicitly define resources and methods
+            handler=self.api_lambda,     # Default Lambda integration
+            proxy=False,                 # Define specific resources/methods below
             deploy_options=apigw.StageOptions(
-                stage_name="prod",       # Deploy to a 'prod' stage
+                stage_name="prod",       # Deployment stage name
                 throttling_rate_limit=10,# Example throttling
                 throttling_burst_limit=5
             ),
-            # Enable CORS for all methods on the API. Be more restrictive in production.
+            # WARNING: Default CORS settings are very permissive (allow all origins/methods).
+            #          For production, restrict allow_origins to your specific frontend domain.
             default_cors_preflight_options=apigw.CorsOptions(
-                allow_origins=apigw.Cors.ALL_ORIGINS, # WARNING: Very permissive. Restrict to your frontend domain in production.
-                allow_methods=apigw.Cors.ALL_METHODS, # Allows GET, POST, PUT, DELETE, OPTIONS etc.
-                allow_headers=['Content-Type', 'X-Amz-Date', 'Authorization', 'X-Api-Key', 'X-Amz-Security-Token']
+                allow_origins=apigw.Cors.ALL_ORIGINS,
+                allow_methods=apigw.Cors.ALL_METHODS,
+                allow_headers=apigw.Cors.DEFAULT_HEADERS + ['X-Api-Key', 'Authorization'] # Example including common custom headers
             )
         )
 
         # --- API Gateway Resources and Methods ---
-        # Define the '/items' resource
         items_resource = self.api.root.add_resource("items")
-        items_resource.add_method("POST") # Integrates with self.api_lambda by default
-        items_resource.add_method("GET")  # Integrates with self.api_lambda by default
+        items_resource.add_method("POST") # Connects POST /items to api_lambda
+        items_resource.add_method("GET")  # Connects GET /items to api_lambda
 
-        # Define the '/items/{itemID}' resource (path parameter)
-        item_id_resource = items_resource.add_resource("{itemID}")
-        item_id_resource.add_method("GET")    # Integrates with self.api_lambda
-        item_id_resource.add_method("PUT")    # Integrates with self.api_lambda
-        item_id_resource.add_method("DELETE") # Integrates with self.api_lambda
+        item_id_resource = items_resource.add_resource("{itemID}") # Path parameter {itemID}
+        item_id_resource.add_method("GET")    # Connects GET /items/{itemID} to api_lambda
+        item_id_resource.add_method("PUT")    # Connects PUT /items/{itemID} to api_lambda
+        item_id_resource.add_method("DELETE") # Connects DELETE /items/{itemID} to api_lambda
 
         # --- CDK Outputs (Infrastructure) ---
-        CfnOutput(self, "DynamoDBTableName", value=self.items_table.table_name)
-        CfnOutput(self, "LambdaFunctionArn", value=self.api_lambda.function_arn)
-        CfnOutput(self, "ApiEndpointUrl", value=self.api.url) # Provides the base URL for the API
+        CfnOutput(self, "DynamoDBTableNameOutput", value=self.items_table.table_name, export_name="ItemsTableName")
+        CfnOutput(self, "LambdaFunctionArnOutput", value=self.api_lambda.function_arn, export_name="ApiLambdaArn")
+        CfnOutput(self, "ApiEndpointUrlOutput", value=self.api.url, export_name="ApiUrl")
 
         # ======================================================================
         # --- CI/CD Pipeline Definition ---
         # ======================================================================
 
         # --- Pipeline Artifacts ---
-        # Represents the output of the Source stage (source code)
         source_output = codepipeline.Artifact("SourceOutput")
-        # Represents the output of the Build stage (synthesized CDK template)
         cdk_build_output = codepipeline.Artifact("CdkBuildOutput")
 
         # --- CodeBuild Project Definition ---
-        # Defines how the CDK app is synthesized and tested
         cdk_build_project = codebuild.PipelineProject(
             self, "CdkBuildProject",
             project_name="ServerlessApi-CDK-Build",
@@ -144,64 +138,57 @@ class MyserverlessprojectStack(Stack):
                 "phases": {
                     "install": {
                         "runtime-versions": {
-                            # Match the Node/Python versions needed for CDK and your tests/app
-                            "python": "3.11"
+                            "python": "3.11" # Match Lambda runtime
                         },
                         "commands": [
-                            "echo Installing Python dependencies...",
-                            "pip install -r requirements.txt",      # CDK dependencies
-                            "pip install -r requirements-dev.txt" # Pytest etc.
-                            # No need to install Node/NPM/CDK CLI explicitly if using standard image
+                            "echo Installing Python project dependencies...",
+                            "pip install -r requirements.txt",      # For CDK app itself
+                            "pip install -r requirements-dev.txt" # For testing (pytest)
                         ]
                     },
                     "pre_build": {
                         "commands": [
                             "echo Running unit tests...",
-                            "pytest tests/unit/" # Run tests defined in tests/unit directory
+                            "pytest tests/unit/" # Expects tests in tests/unit/
                         ]
                     },
                     "build": {
                         "commands": [
                             "echo Synthesizing CDK CloudFormation template...",
-                            # Use npx to ensure the CDK version matches package.json (if you add it)
-                            # or just 'cdk synth' if using globally installed CDK
+                            # npx ensures the CDK CLI version from node_modules is used (if defined in package.json)
+                            # If CDK is installed globally in the image, 'cdk synth' also works.
                             "npx cdk synth"
                         ]
                     }
-                }, # End of phases
+                }, # End phases
                 "artifacts": {
-                    # Specify the output directory for the synthesized CloudFormation templates
-                    "base-directory": "cdk.out", # CDK output directory
+                    "base-directory": "cdk.out", # Output directory of 'cdk synth'
                     "files": [
-                        # Include the main stack template JSON file
-                        f"{self.stack_name}.template.json",
-                        # Include any other assets (like Lambda code zip if not using PythonFunction's bundling)
-                        "**/*"
+                        f"{self.stack_name}.template.json", # The synthesized CloudFormation template
+                        "**/*" # Include any other assets/manifests in cdk.out
                     ]
-                } # End of artifacts
-            }), # IMPORTANT: This closes the from_object dictionary and the method call
+                } # End artifacts
+            }), # End build_spec
             environment=codebuild.BuildEnvironment(
-                # Use a standard AWS CodeBuild image that includes Node.js and Python
+                # Standard image with Python 3.11, Node.js, Docker pre-installed
                 build_image=codebuild.LinuxBuildImage.STANDARD_7_0,
-                privileged=False # Usually not needed unless building Docker images
+                privileged=False # Docker commands for bundling work without privileged mode
             ),
-            # Grant necessary permissions IF the build needs to access other AWS services
-            # (e.g., fetching secrets, accessing ECR). Not needed for basic cdk synth/pytest.
-            # role=...
+            # Note: The default CodeBuild role needs permissions to access the CDK S3 staging bucket
+            #       (usually granted by default) and potentially ECR if using custom bundling images.
         )
 
         # --- CodePipeline Definition ---
         self.pipeline = codepipeline.Pipeline(
             self, "ServerlessApiPipeline",
             pipeline_name="MyServerlessApiPipeline",
-            cross_account_keys=False, # Keep False for single-account setup
-            # Restart pipeline execution if the pipeline definition itself is updated via CDK
-            restart_execution_on_update=True
+            cross_account_keys=False,
+            restart_execution_on_update=True # Automatically restart pipeline if definition changes
         )
 
         # --- Pipeline Stages ---
 
-        # 1. Source Stage (Get code from GitHub)
+        # 1. Source Stage (GitHub)
         self.pipeline.add_stage(
             stage_name="Source",
             actions=[
@@ -210,62 +197,44 @@ class MyserverlessprojectStack(Stack):
                     owner=GITHUB_OWNER,
                     repo=GITHUB_REPO,
                     branch=GITHUB_BRANCH,
-                    connection_arn=CODESTAR_CONNECTION_ARN, # The ARN you created in AWS Console
+                    connection_arn=CODESTAR_CONNECTION_ARN, # Use the validated ARN constant
                     output=source_output,
-                    # Automatically trigger pipeline on commits pushed to the specified branch
                     trigger_on_push=True
                 )
-                # Alternative using GitHub personal access token (less recommended than CodeStar Connections):
-                # Make sure token is stored securely in AWS Secrets Manager
-                # codepipeline_actions.GitHubSourceAction(
-                #     action_name="GitHub_Source",
-                #     owner=GITHUB_OWNER,
-                #     repo=GITHUB_REPO,
-                #     branch=GITHUB_BRANCH,
-                #     oauth_token=SecretValue.secrets_manager("your-github-token-secret-name"),
-                #     output=source_output,
-                #     trigger=codepipeline_actions.GitHubTrigger.WEBHOOK # Or POLL
-                # )
             ]
         )
 
-        # 2. Build Stage (Run tests, synthesize CDK template)
+        # 2. Build Stage (CodeBuild: Test & Synth)
         self.pipeline.add_stage(
             stage_name="Build",
             actions=[
                 codepipeline_actions.CodeBuildAction(
                     action_name="CDK_Build_Synth",
-                    project=cdk_build_project, # The CodeBuild project defined above
-                    input=source_output,       # Input is the source code from GitHub
-                    outputs=[cdk_build_output] # Output is the cdk.out directory contents
+                    project=cdk_build_project,
+                    input=source_output,      # Use code from Source stage
+                    outputs=[cdk_build_output] # Produce artifact for Deploy stage
                 )
             ]
         )
 
-        # 3. Deploy Stage (Deploy CloudFormation stack using the template from Build stage)
+        # 3. Deploy Stage (CloudFormation)
         self.pipeline.add_stage(
             stage_name="Deploy",
             actions=[
                 codepipeline_actions.CloudFormationCreateUpdateStackAction(
                     action_name="Deploy_CFN_Stack",
-                    # Use the stack name defined by this CDK app instance
                     stack_name=self.stack_name,
-                    # Specify the template file from the build artifact
                     template_path=cdk_build_output.at_path(f"{self.stack_name}.template.json"),
-                    # Grant CloudFormation permissions to create/update resources defined in the stack
-                    # WARNING: admin_permissions=True is broad. Create a specific deployment role for production.
+                    # WARNING: admin_permissions=True is convenient for demos but insecure for production.
+                    #          Create a dedicated CloudFormation deployment IAM Role with least privilege
+                    #          and assign it using 'deployment_role' property instead.
                     admin_permissions=True,
-                    # If not using admin_permissions, you'd specify roles here:
-                    # deployment_role=cfn_deployment_role, # Role assumed by CloudFormation
-                    # role=pipeline_cfn_action_role,       # Role assumed by the Pipeline action itself
-                    run_order=1 # First action in this stage
+                    run_order=1
                 )
-                # --- Add more actions here for further steps ---
-                # Example: Integration Testing Action (if you build one)
-                # Example: Manual Approval Action
-                # codepipeline_actions.ManualApprovalAction(action_name="Manual_Approval", run_order=2)
+                # Add other actions like integration tests or manual approvals after initial deploy
+                # codepipeline_actions.ManualApprovalAction(action_name="Approve_Prod", run_order=2)
             ]
         )
 
         # --- CDK Output (Pipeline) ---
-        CfnOutput(self, "PipelineName", value=self.pipeline.pipeline_name)
+        CfnOutput(self, "PipelineNameOutput", value=self.pipeline.pipeline_name, export_name="MyPipelineName")
